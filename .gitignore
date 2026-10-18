@@ -1,0 +1,11 @@
+/release/
+/dist/
+/data/
+/tests/artifacts/
+/engine-fixtures-*/
+/engine-failure-fixtures-*/
+*.dll
+*.exe
+*.pdb
+*.user
+*.suo
