@@ -6,6 +6,19 @@ the actual executable's CLI. CLI coverage includes Windows Shell resolving the
 custom icon, Unicode paths with spaces, undo, source preservation, crop errors,
 and result-file protections. All generated files stay under `tests/artifacts`.
 
+Path-input checks paste a quoted folder path, confirm it with Enter, reject
+invalid edits without writing to the previous folder, and exercise Apply/Undo
+against the current input. Rotation checks cover 90/180/270 degrees, EXIF before
+manual rotation, crop reset, new-image reset, and preservation of the source.
+GUI tests apply both rotated fit and crop modes, then compare the exported ICO
+bytes with the preview's rendering. CLI tests cover valid and invalid `--rotate`
+values and the rule that crop coordinates follow rotation.
+
+Clipboard tests inject synthetic images; they never read or write the system
+clipboard. They check the paste button and Ctrl+V, native paste in text fields,
+transparent PNG pixels, rotation/crop export, preservation on empty/error
+responses, rejection while Apply is busy, and cleanup of owned temporary files.
+
 `EngineTests.cs` is a standalone C# 5 console test harness. It does not start the
 GUI. Compile from the workspace root with the .NET Framework compiler:
 

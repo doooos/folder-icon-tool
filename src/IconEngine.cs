@@ -23,24 +23,54 @@ namespace FolderIconTool
 
         public static Bitmap LoadOrientedImage(string imagePath)
         {
+            return LoadOrientedImage(imagePath, 0);
+        }
+
+        public static Bitmap LoadOrientedImage(string imagePath, int clockwiseRotation)
+        {
             if (String.IsNullOrWhiteSpace(imagePath)) throw new ArgumentException("Choose an image file.", "imagePath");
+            ValidateRotation(clockwiseRotation);
             byte[] bytes = File.ReadAllBytes(imagePath);
             bool isIcon = bytes.Length >= 4 && bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 1 && bytes[3] == 0;
             Exception firstFailure = null;
             if (!isIcon)
             {
-                try { return LoadGdiImage(bytes); }
+                try { return Rotate(LoadGdiImage(bytes), clockwiseRotation); }
                 catch (Exception failure)
                 {
                     if (!(failure is ArgumentException) && !(failure is ExternalException) && !(failure is OutOfMemoryException)) throw;
                     firstFailure = failure;
                 }
             }
-            try { return LoadWicImage(bytes); }
+            try { return Rotate(LoadWicImage(bytes), clockwiseRotation); }
             catch (Exception failure)
             {
                 throw new InvalidDataException("无法读取这张图片。文件可能已损坏，或 Windows 未安装对应的图片解码器。请改用 JPG/PNG，或安装所需的 Windows 图片扩展后重试。",
                     firstFailure == null ? failure : new AggregateException(firstFailure, failure));
+            }
+        }
+
+        private static void ValidateRotation(int clockwiseRotation)
+        {
+            if (clockwiseRotation != 0 && clockwiseRotation != 90 &&
+                clockwiseRotation != 180 && clockwiseRotation != 270)
+                throw new ArgumentOutOfRangeException("clockwiseRotation", "Rotation must be 0, 90, 180, or 270 degrees clockwise.");
+        }
+
+        private static Bitmap Rotate(Bitmap image, int clockwiseRotation)
+        {
+            if (clockwiseRotation == 0) return image;
+            try
+            {
+                RotateFlipType rotation = clockwiseRotation == 90 ? RotateFlipType.Rotate90FlipNone :
+                    clockwiseRotation == 180 ? RotateFlipType.Rotate180FlipNone : RotateFlipType.Rotate270FlipNone;
+                image.RotateFlip(rotation);
+                return image;
+            }
+            catch
+            {
+                image.Dispose();
+                throw;
             }
         }
 
@@ -154,7 +184,7 @@ namespace FolderIconTool
 
         public static OperationResult Apply(string folder, string imagePath, Rectangle? crop, string backupRoot)
         {
-            return Apply(folder, imagePath, crop, backupRoot, false);
+            return Apply(folder, imagePath, crop, backupRoot, false, 0);
         }
 
         public static Bitmap FitSquare(Bitmap image)
@@ -200,6 +230,13 @@ namespace FolderIconTool
 
         public static OperationResult Apply(string folder, string imagePath, Rectangle? crop, string backupRoot, bool fitWholeImage)
         {
+            return Apply(folder, imagePath, crop, backupRoot, fitWholeImage, 0);
+        }
+
+        public static OperationResult Apply(string folder, string imagePath, Rectangle? crop, string backupRoot,
+            bool fitWholeImage, int clockwiseRotation)
+        {
+            ValidateRotation(clockwiseRotation);
             if (fitWholeImage && crop.HasValue)
                 throw new ArgumentException("保留整张图片时不能同时指定裁剪区域。", "crop");
             folder = ValidateFolder(folder);
@@ -209,7 +246,7 @@ namespace FolderIconTool
                 String.Equals(imagePath, Path.Combine(folder, IniName), StringComparison.OrdinalIgnoreCase))
                 throw new ArgumentException("不能将目标文件夹的 .folder-portrait.ico 或 desktop.ini 用作源图片。请先复制为其他文件名，再选择副本。", "imagePath");
             using (FolderLock operationLock = new FolderLock(folder))
-            using (Bitmap image = LoadOrientedImage(imagePath))
+            using (Bitmap image = LoadOrientedImage(imagePath, clockwiseRotation))
             using (Bitmap square = RenderIconImage(image, crop, fitWholeImage))
             {
                 string root = ValidateBackupRoot(backupRoot, folder);

@@ -41,6 +41,7 @@ namespace FolderIconTool
                 string imagePath = operation == "apply" ? Required(options, "--image") : null;
                 Rectangle? crop = operation == "apply" ? ParseCrop(options) : null;
                 bool fitWholeImage = operation == "apply" && ParseFit(options, crop);
+                int clockwiseRotation = operation == "apply" ? ParseRotation(options) : 0;
                 string resultPath = options.ContainsKey("--result") ? options["--result"] : null;
                 // Validate and reserve the report before changing a folder.
                 if (resultPath != null)
@@ -56,7 +57,7 @@ namespace FolderIconTool
                         FileAccess.Write, FileShare.Read);
                 }
                 completed = operation == "apply"
-                    ? IconEngine.Apply(folder, imagePath, crop, backups, fitWholeImage)
+                    ? IconEngine.Apply(folder, imagePath, crop, backups, fitWholeImage, clockwiseRotation)
                     : IconEngine.RestoreLast(folder, backups);
                 string json = new JavaScriptSerializer().Serialize(completed);
                 WriteResult(json, reportStream);
@@ -93,7 +94,7 @@ namespace FolderIconTool
                 string key = args[i];
                 bool allowed = key == "--folder" || key == "--backups" || key == "--result" ||
                     (operation == "apply" &&
-                        (key == "--image" || key == "--crop" || key == "--fit"));
+                        (key == "--image" || key == "--crop" || key == "--fit" || key == "--rotate"));
                 if (!allowed || i + 1 >= args.Length || options.ContainsKey(key))
                     throw new ArgumentException("参数无效或重复：" + key);
                 options.Add(key, args[i + 1]);
@@ -136,6 +137,20 @@ namespace FolderIconTool
             return value == "contain";
         }
 
+        private static int ParseRotation(Dictionary<string, string> options)
+        {
+            string value;
+            if (!options.TryGetValue("--rotate", out value)) return 0;
+            switch (value)
+            {
+                case "0": return 0;
+                case "90": return 90;
+                case "180": return 180;
+                case "270": return 270;
+                default: throw new ArgumentException("--rotate 只接受 0、90、180 或 270。旋转角度为顺时针方向。");
+            }
+        }
+
         private static bool IsInside(string path, string folder)
         {
             string root = Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar) +
@@ -154,12 +169,13 @@ namespace FolderIconTool
         }
 
         private const string Help =
-            "全能自定义文件夹图标 1.1.0\r\n" +
+            "全能自定义文件夹图标 1.2.0\r\n" +
             "双击打开中文界面；命令行用法：\r\n" +
-            "  apply --folder <文件夹> --image <图片> [--fit contain|cover] [--crop x,y,宽,高]\r\n" +
+            "  apply --folder <文件夹> --image <图片> [--rotate 0|90|180|270] [--fit contain|cover] [--crop x,y,宽,高]\r\n" +
             "  undo --folder <文件夹>\r\n" +
             "可选：--backups <备份目录> --result <新建JSON结果文件>\r\n" +
-            "默认完整显示图片。--crop 自定义裁剪后等比适配，也兼容 x,y,边长。\r\n" +
+            "默认完整显示图片。--rotate 按顺时针旋转，不修改原图；--crop 坐标基于旋转后的图片像素。\r\n" +
+            "--crop 自定义裁剪后等比适配，也兼容 x,y,边长。\r\n" +
             "所有命令均不打开界面。\r\n" +
             "默认备份：程序所在目录\\data\\backups。撤销须使用原备份目录。\r\n";
     }

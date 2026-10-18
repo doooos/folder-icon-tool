@@ -1,7 +1,9 @@
 using System;
 using System.ComponentModel;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Windows.Forms;
 
@@ -10,8 +12,12 @@ namespace FolderIconTool
     public sealed class MainForm : Form
     {
         private readonly string backupRoot;
+        private readonly Func<Image> clipboardImageProvider;
+        private readonly List<string> temporaryImageDirectories = new List<string>();
         private readonly TextBox folderPathBox, imagePathBox;
-        private readonly Button chooseFolderButton, chooseImageButton, applyButton, restoreButton, resetButton, customCropButton;
+        private readonly Button chooseFolderButton, confirmFolderButton, chooseImageButton, applyButton, restoreButton, resetButton, customCropButton;
+        private readonly Button rotateLeftButton, rotateRightButton;
+        private readonly Button pasteImageButton;
         private readonly TrackBar zoomBar;
         private readonly Label zoomLabel, statusLabel, modeHelpLabel;
         private readonly CheckBox fitWholeImageCheckBox, squareCropCheckBox;
@@ -19,14 +25,23 @@ namespace FolderIconTool
         private readonly CropPreview cropPreview;
         private readonly ToolTip toolTip = new ToolTip();
         private string selectedFolder, selectedImage;
+        private int clockwiseRotation;
         private bool busy;
         private bool updatingCropControls;
 
         public MainForm(string backupRoot)
+            : this(backupRoot, delegate { return Clipboard.GetImage(); })
+        {
+        }
+
+        internal MainForm(string backupRoot, Func<Image> clipboardImageProvider)
         {
             if (String.IsNullOrWhiteSpace(backupRoot))
                 throw new ArgumentException("请指定备份目录。", "backupRoot");
             this.backupRoot = Path.GetFullPath(backupRoot);
+            if (clipboardImageProvider == null)
+                throw new ArgumentNullException("clipboardImageProvider");
+            this.clipboardImageProvider = clipboardImageProvider;
             Text = "全能自定义文件夹图标";
             Font = new Font("Microsoft YaHei UI", 10F);
             AutoScaleDimensions = new SizeF(96F, 96F);
@@ -58,13 +73,15 @@ namespace FolderIconTool
             Label title = MakeLabel("全能自定义文件夹图标");
             title.Font = new Font(Font.FontFamily, 16F, FontStyle.Bold);
             introduction.Controls.Add(title, 0, 0);
-            introduction.Controls.Add(MakeLabel("选择文件夹 → 选择图片 → 应用。自动转换格式和尺寸，可直接使用。"), 0, 1);
+            introduction.Controls.Add(MakeLabel("选择文件夹 → 选择或粘贴图片 → 应用。预览区支持 Ctrl+V 粘贴截图。"), 0, 1);
             layout.Controls.Add(introduction, 0, 0);
-            folderPathBox = MakePathBox("尚未选择文件夹");
+            folderPathBox = MakePathBox(String.Empty);
+            folderPathBox.ReadOnly = false;
             imagePathBox = MakePathBox("尚未选择照片，也可以拖入照片");
             chooseFolderButton = MakeButton("选择文件夹…");
+            confirmFolderButton = MakeButton("确认路径");
             chooseImageButton = MakeButton("选择照片…");
-            layout.Controls.Add(MakePathRow("目标文件夹", folderPathBox, chooseFolderButton), 0, 1);
+            layout.Controls.Add(MakePathRow("目标文件夹", folderPathBox, chooseFolderButton, confirmFolderButton), 0, 1);
             layout.Controls.Add(MakePathRow("照片文件", imagePathBox, chooseImageButton), 0, 2);
 
             TableLayoutPanel content = new TableLayoutPanel();
@@ -83,10 +100,10 @@ namespace FolderIconTool
             sidebar.BackColor = Color.White;
             sidebar.Padding = new Padding(14, 12, 14, 12);
             sidebar.ColumnCount = 1;
-            sidebar.RowCount = 9;
+            sidebar.RowCount = 10;
             sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
             sidebar.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            foreach (float height in new float[] { 34, 38, 32, 28, 32, 36, 60 })
+            foreach (float height in new float[] { 36, 34, 38, 32, 28, 32, 36, 60 })
                 sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
             sidebar.Controls.Add(MakeLabel("实际图标预览 · 256 × 256"), 0, 0);
             iconPreview = new PictureBox();
@@ -95,22 +112,37 @@ namespace FolderIconTool
             iconPreview.BackColor = Color.FromArgb(241, 244, 248);
             iconPreview.Margin = new Padding(8, 3, 8, 3);
             sidebar.Controls.Add(iconPreview, 0, 1);
+            TableLayoutPanel rotationButtons = new TableLayoutPanel();
+            rotationButtons.Dock = DockStyle.Fill;
+            rotationButtons.Margin = Padding.Empty;
+            rotationButtons.ColumnCount = 2;
+            rotationButtons.RowCount = 1;
+            rotationButtons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            rotationButtons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            rotateLeftButton = MakeButton("左转 90°");
+            rotateRightButton = MakeButton("右转 90°");
+            rotateLeftButton.Dock = rotateRightButton.Dock = DockStyle.Fill;
+            rotateLeftButton.Margin = new Padding(0, 2, 3, 2);
+            rotateRightButton.Margin = new Padding(3, 2, 0, 2);
+            rotationButtons.Controls.Add(rotateLeftButton, 0, 0);
+            rotationButtons.Controls.Add(rotateRightButton, 1, 0);
+            sidebar.Controls.Add(rotationButtons, 0, 2);
             fitWholeImageCheckBox = new CheckBox();
             fitWholeImageCheckBox.Text = "完整图片（自动适配）";
             fitWholeImageCheckBox.Checked = true;
             fitWholeImageCheckBox.Dock = DockStyle.Fill;
             fitWholeImageCheckBox.Margin = Padding.Empty;
-            sidebar.Controls.Add(fitWholeImageCheckBox, 0, 2);
+            sidebar.Controls.Add(fitWholeImageCheckBox, 0, 3);
             customCropButton = MakeButton("自定义裁剪 / 重新框选");
             customCropButton.Dock = DockStyle.Fill;
-            sidebar.Controls.Add(customCropButton, 0, 3);
+            sidebar.Controls.Add(customCropButton, 0, 4);
             squareCropCheckBox = new CheckBox();
             squareCropCheckBox.Text = "锁定正方形（1:1）";
             squareCropCheckBox.Dock = DockStyle.Fill;
             squareCropCheckBox.Margin = Padding.Empty;
-            sidebar.Controls.Add(squareCropCheckBox, 0, 4);
+            sidebar.Controls.Add(squareCropCheckBox, 0, 5);
             zoomLabel = MakeLabel("自动适配 · 不裁剪");
-            sidebar.Controls.Add(zoomLabel, 0, 5);
+            sidebar.Controls.Add(zoomLabel, 0, 6);
             zoomBar = new TrackBar();
             zoomBar.Dock = DockStyle.Fill;
             zoomBar.Minimum = 100;
@@ -119,13 +151,13 @@ namespace FolderIconTool
             zoomBar.SmallChange = 10;
             zoomBar.LargeChange = 50;
             zoomBar.TickStyle = TickStyle.None;
-            sidebar.Controls.Add(zoomBar, 0, 6);
+            sidebar.Controls.Add(zoomBar, 0, 7);
             resetButton = MakeButton("重置裁剪");
             resetButton.Dock = DockStyle.Fill;
-            sidebar.Controls.Add(resetButton, 0, 7);
+            sidebar.Controls.Add(resetButton, 0, 8);
             modeHelpLabel = MakeLabel("保留整张图片，无需裁剪。\n点击“自定义裁剪”可自己框选。");
             modeHelpLabel.Font = new Font(Font.FontFamily, 9F);
-            sidebar.Controls.Add(modeHelpLabel, 0, 8);
+            sidebar.Controls.Add(modeHelpLabel, 0, 9);
             content.Controls.Add(sidebar, 1, 0);
             layout.Controls.Add(content, 0, 3);
 
@@ -141,15 +173,31 @@ namespace FolderIconTool
             applyButton.FlatAppearance.BorderSize = 0;
             restoreButton = MakeButton("撤销上次替换");
             restoreButton.Size = new Size(164, 42);
+            pasteImageButton = MakeButton("粘贴图片 (Ctrl+V)");
+            pasteImageButton.Size = new Size(184, 42);
             actions.Controls.Add(applyButton);
             actions.Controls.Add(restoreButton);
+            actions.Controls.Add(pasteImageButton);
             layout.Controls.Add(actions, 0, 4);
-            statusLabel = MakeLabel("请先选择目标文件夹和照片。也可拖入一个文件夹或一张照片。");
+            statusLabel = MakeLabel("请粘贴或选择目标文件夹，再选择照片。粘贴路径后按 Enter 或点击“确认路径”。");
             statusLabel.AutoEllipsis = true;
             layout.Controls.Add(statusLabel, 0, 5);
 
             chooseFolderButton.Click += delegate { ChooseFolder(); };
+            confirmFolderButton.Click += delegate { ConfirmFolderPath(); };
+            folderPathBox.TextChanged += delegate { ValidateFolderPath(false, true); UpdateButtons(); };
+            folderPathBox.KeyDown += delegate(object sender, KeyEventArgs eventArgs)
+            {
+                if (eventArgs.KeyCode != Keys.Enter)
+                    return;
+                eventArgs.Handled = true;
+                eventArgs.SuppressKeyPress = true;
+                ConfirmFolderPath();
+            };
             chooseImageButton.Click += delegate { ChooseImage(); };
+            pasteImageButton.Click += delegate { PasteClipboardImage(); };
+            rotateLeftButton.Click += delegate { RotateSelection(-90); };
+            rotateRightButton.Click += delegate { RotateSelection(90); };
             applyButton.Click += delegate { ApplySelection(); };
             restoreButton.Click += delegate { RestoreSelection(); };
             fitWholeImageCheckBox.CheckedChanged += delegate
@@ -200,7 +248,7 @@ namespace FolderIconTool
             string newFolder = selectedFolder;
             if (!String.IsNullOrWhiteSpace(folder))
             {
-                newFolder = Path.GetFullPath(folder);
+                newFolder = NormalizeFolderPath(folder);
                 if (!Directory.Exists(newFolder))
                     throw new DirectoryNotFoundException("目标文件夹不存在。");
             }
@@ -214,14 +262,17 @@ namespace FolderIconTool
                 newImage = IconEngine.LoadOrientedImage(newImagePath);
             }
             selectedFolder = newFolder;
-            folderPathBox.Text = selectedFolder ?? "尚未选择文件夹";
+            if (!String.IsNullOrWhiteSpace(folder))
+                folderPathBox.Text = selectedFolder;
             toolTip.SetToolTip(folderPathBox, selectedFolder);
             if (newImage != null)
             {
                 selectedImage = newImagePath;
+                clockwiseRotation = 0;
                 imagePathBox.Text = selectedImage;
                 toolTip.SetToolTip(imagePathBox, selectedImage);
                 cropPreview.SetImage(newImage);
+                CleanupTemporaryImages(false);
             }
             UpdateButtons();
             if (!cropPreview.HasImage)
@@ -230,6 +281,173 @@ namespace FolderIconTool
                 SetStatus("照片已载入。请选择目标文件夹，再点击应用。", false);
             else
                 SetStatus(fitWholeImageCheckBox.Checked ? "图片已自动适配。点击“应用到文件夹”即可使用，原图片不会被修改。" : "可选裁剪预览已就绪。点击“应用到文件夹”才会替换。", false);
+            if (String.IsNullOrEmpty(selectedFolder) && !String.IsNullOrWhiteSpace(folderPathBox.Text))
+                ValidateFolderPath(false, true);
+        }
+
+        protected override bool ProcessCmdKey(ref Message message, Keys keyData)
+        {
+            if (keyData == (Keys.Control | Keys.V) && !IsTextInputActive())
+            {
+                PasteClipboardImage();
+                return true;
+            }
+            return base.ProcessCmdKey(ref message, keyData);
+        }
+
+        private bool IsTextInputActive()
+        {
+            Control active = ActiveControl;
+            while (active is ContainerControl)
+                active = ((ContainerControl)active).ActiveControl;
+            return active is TextBoxBase || ContainsFocusedTextBox(this);
+        }
+
+        private static bool ContainsFocusedTextBox(Control parent)
+        {
+            foreach (Control child in parent.Controls)
+                if ((child is TextBoxBase && child.ContainsFocus) || ContainsFocusedTextBox(child))
+                    return true;
+            return false;
+        }
+
+        private void PasteClipboardImage()
+        {
+            if (busy)
+                return;
+            try
+            {
+                using (Image image = clipboardImageProvider())
+                {
+                    if (image == null)
+                    {
+                        SetStatus("剪贴板中没有图片。请先复制截图或图片，再粘贴。", true);
+                        return;
+                    }
+                    LoadPastedImage(image);
+                }
+            }
+            catch (Exception error)
+            {
+                SetStatus("无法粘贴图片：" + error.Message, true);
+            }
+        }
+
+        private void LoadPastedImage(Image image)
+        {
+            if (busy)
+                throw new InvalidOperationException("正在处理上一次操作，请稍候。");
+            if (image == null)
+                throw new ArgumentNullException("image");
+            string directory = Path.Combine(backupRoot, "clipboard-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            temporaryImageDirectories.Add(directory);
+            string path = Path.Combine(directory, "image.png");
+            try
+            {
+                using (Bitmap copy = new Bitmap(image.Width, image.Height, PixelFormat.Format32bppArgb))
+                {
+                    using (Graphics graphics = Graphics.FromImage(copy))
+                    {
+                        graphics.CompositingMode = CompositingMode.SourceCopy;
+                        graphics.DrawImage(image, new Rectangle(0, 0, copy.Width, copy.Height),
+                            0, 0, image.Width, image.Height, GraphicsUnit.Pixel);
+                    }
+                    copy.Save(path, ImageFormat.Png);
+                }
+                LoadSelection(null, path);
+                imagePathBox.Text = "剪贴板图片（临时副本）";
+                toolTip.SetToolTip(imagePathBox, "粘贴的图片已保存为临时副本；换图或关闭窗口后自动清理。");
+                SetStatus("图片已从剪贴板载入。可旋转、裁剪，再点击应用；不会修改剪贴板。", false);
+            }
+            finally
+            {
+                CleanupTemporaryImages(false);
+            }
+        }
+
+        private void CleanupTemporaryImages(bool includeSelected)
+        {
+            for (int index = temporaryImageDirectories.Count - 1; index >= 0; index--)
+            {
+                string directory = temporaryImageDirectories[index];
+                string path = Path.Combine(directory, "image.png");
+                if (!includeSelected && String.Equals(path, selectedImage, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                try
+                {
+                    File.Delete(path);
+                    if (Directory.Exists(directory))
+                        Directory.Delete(directory, false);
+                    temporaryImageDirectories.RemoveAt(index);
+                }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
+
+        private static string NormalizeFolderPath(string text)
+        {
+            string path = text.Trim();
+            if (path.Length >= 2 && path[0] == '"' && path[path.Length - 1] == '"')
+                path = path.Substring(1, path.Length - 2).Trim();
+            if (String.IsNullOrWhiteSpace(path))
+                throw new ArgumentException("请粘贴或选择目标文件夹路径。");
+            return Path.GetFullPath(path);
+        }
+
+        private bool ValidateFolderPath(bool normalizeText, bool showStatus)
+        {
+            string folder = null;
+            string error = null;
+            try
+            {
+                folder = NormalizeFolderPath(folderPathBox.Text);
+                if (!Directory.Exists(folder))
+                    error = "目标文件夹不存在或无法访问。请检查路径；不会自动创建文件夹。";
+            }
+            catch (ArgumentException) { error = "路径无效。请粘贴或选择现有文件夹路径。"; }
+            catch (NotSupportedException) { error = "路径格式不受支持。请选择现有文件夹。"; }
+            catch (IOException) { error = "路径无效或过长。请选择现有文件夹。"; }
+            catch (System.Security.SecurityException) { error = "无法访问该文件夹。请检查访问权限。"; }
+            selectedFolder = error == null ? folder : null;
+            toolTip.SetToolTip(folderPathBox, error ?? selectedFolder);
+            if (error != null)
+            {
+                if (showStatus)
+                    SetStatus(error, true);
+                return false;
+            }
+            if (normalizeText && folderPathBox.Text != selectedFolder)
+                folderPathBox.Text = selectedFolder;
+            if (showStatus)
+                SetStatus(cropPreview.HasImage ? "目标文件夹已确认。点击“应用到文件夹”即可使用。" : "目标文件夹已确认。请选择照片，或点击“撤销上次替换”。", false);
+            return true;
+        }
+
+        private bool ConfirmFolderPath()
+        {
+            if (busy)
+                return false;
+            bool valid = ValidateFolderPath(true, true);
+            UpdateButtons();
+            return valid;
+        }
+
+        private void RotateSelection(int degrees)
+        {
+            if (busy || !cropPreview.HasImage)
+                return;
+            try
+            {
+                int rotation = (clockwiseRotation + degrees + 360) % 360;
+                Bitmap image = IconEngine.LoadOrientedImage(selectedImage, rotation);
+                clockwiseRotation = rotation;
+                cropPreview.SetImage(image);
+                UpdateButtons();
+                SetStatus("图片已顺时针旋转 " + rotation + "°。裁剪已重置，可重新框选；原图片不会被修改。", false);
+            }
+            catch (Exception error) { ShowError("无法旋转图片", error); }
         }
 
         private static Label MakeLabel(string text)
@@ -269,20 +487,27 @@ namespace FolderIconTool
             return button;
         }
 
-        private static TableLayoutPanel MakePathRow(string title, TextBox box, Button button)
+        private static TableLayoutPanel MakePathRow(string title, TextBox box, Button button, Button confirmButton = null)
         {
             TableLayoutPanel row = new TableLayoutPanel();
             row.Dock = DockStyle.Fill;
             row.Margin = Padding.Empty;
-            row.ColumnCount = 3;
+            row.ColumnCount = confirmButton == null ? 3 : 4;
             row.RowCount = 1;
             row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104F));
             row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            if (confirmButton != null)
+                row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104F));
             row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 144F));
             row.Controls.Add(MakeLabel(title), 0, 0);
             row.Controls.Add(box, 1, 0);
+            if (confirmButton != null)
+            {
+                confirmButton.Dock = DockStyle.Fill;
+                row.Controls.Add(confirmButton, 2, 0);
+            }
             button.Dock = DockStyle.Fill;
-            row.Controls.Add(button, 2, 0);
+            row.Controls.Add(button, confirmButton == null ? 2 : 3, 0);
             return row;
         }
 
@@ -353,18 +578,19 @@ namespace FolderIconTool
 
         private void ApplySelection()
         {
-            if (busy || String.IsNullOrEmpty(selectedFolder) || !cropPreview.HasImage)
+            if (busy || !ConfirmFolderPath() || !cropPreview.HasImage)
                 return;
             string folder = selectedFolder;
             string imagePath = selectedImage;
             bool fitWholeImage = fitWholeImageCheckBox.Checked;
             Rectangle? crop = fitWholeImage ? (Rectangle?)null : cropPreview.CropRectangle;
-            RunOperation("正在应用头像，请稍候…", delegate { return IconEngine.Apply(folder, imagePath, crop, backupRoot, fitWholeImage); });
+            int rotation = clockwiseRotation;
+            RunOperation("正在应用头像，请稍候…", delegate { return IconEngine.Apply(folder, imagePath, crop, backupRoot, fitWholeImage, rotation); });
         }
 
         private void RestoreSelection()
         {
-            if (busy || String.IsNullOrEmpty(selectedFolder))
+            if (busy || !ConfirmFolderPath())
                 return;
             string folder = selectedFolder;
             RunOperation("正在撤销上次替换，请稍候…", delegate { return IconEngine.RestoreLast(folder, backupRoot); });
@@ -403,12 +629,16 @@ namespace FolderIconTool
 
         private void UpdateButtons()
         {
+            folderPathBox.Enabled = !busy;
             chooseFolderButton.Enabled = !busy;
+            confirmFolderButton.Enabled = !busy;
             chooseImageButton.Enabled = !busy;
+            pasteImageButton.Enabled = !busy;
+            rotateLeftButton.Enabled = rotateRightButton.Enabled = !busy && cropPreview.HasImage;
             fitWholeImageCheckBox.Enabled = !busy;
             bool cropEnabled = !busy && cropPreview.HasImage && !fitWholeImageCheckBox.Checked;
             cropPreview.FitWholeImage = fitWholeImageCheckBox.Checked;
-            cropPreview.Enabled = cropEnabled;
+            cropPreview.Enabled = !busy;
             customCropButton.Enabled = !busy && cropPreview.HasImage;
             squareCropCheckBox.Enabled = cropEnabled;
             zoomBar.Enabled = cropEnabled;
@@ -460,6 +690,7 @@ namespace FolderIconTool
                         previous.Dispose();
                 }
                 toolTip.Dispose();
+                CleanupTemporaryImages(true);
             }
             base.Dispose(disposing);
         }
@@ -681,9 +912,12 @@ namespace FolderIconTool
             protected override void OnMouseDown(MouseEventArgs eventArgs)
             {
                 base.OnMouseDown(eventArgs);
-                if (!HasImage || fitWholeImage || eventArgs.Button != MouseButtons.Left)
+                if (!Enabled || eventArgs.Button != MouseButtons.Left)
                     return;
+                Select();
                 Focus();
+                if (!HasImage || fitWholeImage)
+                    return;
                 RectangleF bounds = ImageBounds();
                 DragMode mode = selectionArmed ? DragMode.None : HitTest(eventArgs.Location);
                 if (mode == DragMode.None && !bounds.Contains(eventArgs.Location))

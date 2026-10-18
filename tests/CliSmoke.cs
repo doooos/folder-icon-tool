@@ -99,6 +99,22 @@ internal static class CliSmoke
             AssertUnchangedFolder();
             Console.WriteLine("PASS legacy square crop CLI and undo");
 
+            string rotated = Path.Combine(output, "rotated.json");
+            Require(Run("apply", "--folder", folder, "--image", picture, "--rotate", "90",
+                "--crop", "0,0,300", "--backups", backups, "--result", rotated) == 0 && ReadSuccess(rotated),
+                "Clockwise rotation with a post-rotation crop must apply successfully.");
+            using (Bitmap rendered = ReadIconFrame(Path.Combine(folder, ".folder-portrait.ico"), 256))
+            {
+                Require(rendered.Width == 256 && rendered.Height == 256, "Rotated CLI icon must expose its 256-pixel frame.");
+                Require(Near(rendered.GetPixel(128, 16), Color.Gold) &&
+                    Near(rendered.GetPixel(128, 240), Color.CornflowerBlue),
+                    "The CLI crop must use coordinates from the clockwise-rotated image.");
+            }
+            AssertOriginalImage();
+            Require(Run("undo", "--folder", folder, "--backups", backups) == 0, "Rotated crop undo.");
+            AssertUnchangedFolder();
+            Console.WriteLine("PASS clockwise rotation CLI, crop coordinates and source preservation");
+
             string badCrop = Path.Combine(output, "bad-crop.json");
             Require(Run("apply", "--folder", folder, "--image", picture,
                 "--crop", "9999,9999,10", "--backups", backups,
@@ -106,6 +122,25 @@ internal static class CliSmoke
             Require(!ReadSuccess(badCrop), "Invalid crop must return a failed result.");
             AssertUnchangedFolder();
             Console.WriteLine("PASS invalid crop is nonmutating");
+
+            string invalidBackups = Path.Combine(output, "invalid-rotation-backups");
+            foreach (string angle in new string[] { "45", "360", "-90", "090", "+90", "90x", "" })
+            {
+                string invalidReport = Path.Combine(output, "invalid-rotation-" +
+                    (angle.Length == 0 ? "empty" : angle.Replace('+', 'p').Replace('-', 'm')) + ".json");
+                Require(Run("apply", "--folder", folder, "--image", picture, "--rotate", angle,
+                    "--backups", invalidBackups, "--result", invalidReport) == 1,
+                    "Unsupported rotation angle must fail: " + angle);
+                Require(!File.Exists(invalidReport), "Invalid rotation must be rejected before reserving a result file.");
+                Require(!Directory.Exists(invalidBackups), "Invalid rotation must not create backups.");
+                AssertUnchangedFolder();
+            }
+            Require(Run("apply", "--folder", folder, "--image", picture,
+                "--backups", invalidBackups, "--result", Path.Combine(output, "missing-rotation.json"),
+                "--rotate") == 1, "A missing rotation value must fail.");
+            Require(!Directory.Exists(invalidBackups), "Missing rotation value must not create backups.");
+            AssertUnchangedFolder();
+            Console.WriteLine("PASS invalid rotation values are rejected without writes");
 
             string existingReport = Path.Combine(output, "existing.json");
             File.WriteAllText(existingReport, "retain this report", Encoding.UTF8);
@@ -131,7 +166,7 @@ internal static class CliSmoke
                 "A missing report parent must be rejected.");
             AssertUnchangedFolder();
             Console.WriteLine("PASS missing report directory is rejected before mutation");
-            Console.WriteLine("RESULT 8 passed, 0 failed");
+            Console.WriteLine("RESULT 10 passed, 0 failed");
             return 0;
         }
         catch (Exception ex)
@@ -212,6 +247,59 @@ internal static class CliSmoke
         for (int i = 0; i < first.Length; i++)
             if (first[i] != second[i]) return false;
         return true;
+    }
+
+    private static bool Near(Color actual, Color expected)
+    {
+        return actual.A >= 240 && Math.Abs(actual.R - expected.R) < 35 &&
+            Math.Abs(actual.G - expected.G) < 35 && Math.Abs(actual.B - expected.B) < 35;
+    }
+
+    private static Bitmap ReadIconFrame(string path, int requestedSize)
+    {
+        byte[] contents = File.ReadAllBytes(path);
+        using (BinaryReader reader = new BinaryReader(new MemoryStream(contents)))
+        {
+            Require(reader.ReadUInt16() == 0 && reader.ReadUInt16() == 1, "Invalid ICO header.");
+            int count = reader.ReadUInt16();
+            for (int index = 0; index < count; index++)
+            {
+                byte[] entry = reader.ReadBytes(16);
+                Require(entry.Length == 16, "Truncated ICO directory.");
+                int width = entry[0] == 0 ? 256 : entry[0];
+                int height = entry[1] == 0 ? 256 : entry[1];
+                int length = BitConverter.ToInt32(entry, 8);
+                int offset = BitConverter.ToInt32(entry, 12);
+                Require(length > 0 && offset >= 6 + count * 16 &&
+                    (long)offset + length <= contents.Length, "ICO frame points outside file.");
+                if (width != requestedSize || height != requestedSize) continue;
+
+                byte[] frame = new byte[length];
+                Buffer.BlockCopy(contents, offset, frame, 0, length);
+                if (frame.Length >= 8 && frame[0] == 137 && frame[1] == 80 &&
+                    frame[2] == 78 && frame[3] == 71)
+                {
+                    using (MemoryStream imageStream = new MemoryStream(frame))
+                    using (Bitmap decoded = new Bitmap(imageStream))
+                        return new Bitmap(decoded);
+                }
+
+                using (MemoryStream iconStream = new MemoryStream())
+                using (BinaryWriter writer = new BinaryWriter(iconStream))
+                {
+                    writer.Write((ushort)0);
+                    writer.Write((ushort)1);
+                    writer.Write((ushort)1);
+                    writer.Write(entry, 0, 12);
+                    writer.Write(22);
+                    writer.Write(frame);
+                    writer.Flush();
+                    iconStream.Position = 0;
+                    using (Icon icon = new Icon(iconStream)) return icon.ToBitmap();
+                }
+            }
+        }
+        throw new InvalidDataException("ICO is missing a " + requestedSize + "-pixel frame.");
     }
 
     private static void Require(bool condition, string message)

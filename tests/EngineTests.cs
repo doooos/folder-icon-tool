@@ -26,6 +26,8 @@ namespace FolderIconTool.Tests
                 runRoot = Path.Combine(outputRoot, Guid.NewGuid().ToString("N").Substring(0, 8));
                 Directory.CreateDirectory(runRoot);
                 Run("crop dimensions and selected pixels", CropBehavior);
+                Run("manual rotation dimensions and pixels", ManualRotation);
+                Run("rotated crop matches applied icon and preserves source", RotatedCrop);
                 Run("rectangular crop preserves selection, aspect and undo", RectangularCrop);
                 Run("wide auto-fit preserves edges, aspect and transparency", delegate(string fixture) { FitBehavior(fixture, false); });
                 Run("tall auto-fit preserves edges, aspect and transparency", delegate(string fixture) { FitBehavior(fixture, true); });
@@ -89,6 +91,102 @@ namespace FolderIconTool.Tests
                 Require(Near(selected.GetPixel(64, 128), Color.Blue), "Explicit crop did not select requested pixels.");
                 Require(Near(selected.GetPixel(192, 128), Color.Yellow), "Explicit crop did not preserve its right edge.");
             }
+        }
+
+        private static void ManualRotation(string fixture)
+        {
+            string source = MakeRotationImage(fixture);
+            string originalHash = Hash(source);
+            int[] angles = new int[] { 0, 90, 180, 270 };
+            foreach (int angle in angles)
+            {
+                using (Bitmap oriented = IconEngine.LoadOrientedImage(source, angle))
+                {
+                    bool quarterTurn = angle == 90 || angle == 270;
+                    Require(oriented.Width == (quarterTurn ? 2 : 4) && oriented.Height == (quarterTurn ? 4 : 2),
+                        "Manual rotation produced incorrect dimensions at " + angle + " degrees.");
+                    for (int y = 0; y < 2; y++)
+                        for (int x = 0; x < 4; x++)
+                        {
+                            int rotatedX, rotatedY;
+                            MapRotation(x, y, angle, out rotatedX, out rotatedY);
+                            Require(oriented.GetPixel(rotatedX, rotatedY).ToArgb() == RotationColor(x, y).ToArgb(),
+                                "Manual rotation changed pixel " + x + "," + y + " at " + angle + " degrees.");
+                        }
+                }
+                Require(Hash(source) == originalHash, "Loading with rotation changed source bytes.");
+            }
+            bool rejected = false;
+            try { using (Bitmap ignored = IconEngine.LoadOrientedImage(source, 45)) { } }
+            catch (ArgumentOutOfRangeException) { rejected = true; }
+            Require(rejected, "Engine must reject unsupported rotation angles.");
+            Require(Hash(source) == originalHash, "Invalid rotation changed source bytes.");
+        }
+
+        private static void RotatedCrop(string fixture)
+        {
+            string source = MakeRotationImage(fixture), originalHash = Hash(source), folder = MakeFolder(fixture);
+            Rectangle crop = new Rectangle(0, 1, 2, 2);
+            SeedExisting(folder);
+            Snapshot before = Capture(folder);
+            using (Bitmap rotated = IconEngine.LoadOrientedImage(source, 90))
+            using (Bitmap expected = IconEngine.RenderIconImage(rotated, crop, false))
+            {
+                Require(Near(expected.GetPixel(64, 64), Color.Magenta, 48) && Near(expected.GetPixel(192, 64), Color.Green, 48) &&
+                    Near(expected.GetPixel(64, 192), Color.Orange, 48) && Near(expected.GetPixel(192, 192), Color.Blue, 48),
+                    "Crop coordinates were not applied to the manually rotated image.");
+                RequireSuccess(IconEngine.Apply(folder, source, crop, Backups(fixture), false, 90), "rotated crop apply");
+                VerifyIco(Path.Combine(folder, IconName), delegate(Bitmap decoded)
+                {
+                    if (decoded.Width == 256) RequireSamePixels(expected, decoded, "Rotated crop icon");
+                });
+                Require(Hash(source) == originalHash, "Rotated crop changed the source bytes.");
+                using (FileStream exclusive = File.Open(source, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                    Require(exclusive.Length > 0, "Rotated source is still locked.");
+            }
+            Undo(folder, fixture);
+            EqualSnapshot(before, Capture(folder), "Rotated crop undo");
+            Require(Hash(source) == originalHash, "Rotated crop undo changed source bytes.");
+        }
+
+        private static string MakeRotationImage(string fixture)
+        {
+            string source = Path.Combine(fixture, "rotation.png");
+            using (Bitmap bitmap = new Bitmap(4, 2, PixelFormat.Format32bppArgb))
+            {
+                for (int y = 0; y < 2; y++)
+                    for (int x = 0; x < 4; x++) bitmap.SetPixel(x, y, RotationColor(x, y));
+                bitmap.Save(source, ImageFormat.Png);
+            }
+            return source;
+        }
+
+        private static Color RotationColor(int x, int y)
+        {
+            Color[] colors = new Color[] { Color.Red, Color.Green, Color.Blue, Color.Yellow,
+                Color.Cyan, Color.Magenta, Color.Orange, Color.Purple };
+            return colors[y * 4 + x];
+        }
+
+        private static void MapRotation(int x, int y, int angle, out int rotatedX, out int rotatedY)
+        {
+            switch (angle)
+            {
+                case 90: rotatedX = 1 - y; rotatedY = x; break;
+                case 180: rotatedX = 3 - x; rotatedY = 1 - y; break;
+                case 270: rotatedX = y; rotatedY = 3 - x; break;
+                default: rotatedX = x; rotatedY = y; break;
+            }
+        }
+
+        private static void RequireSamePixels(Bitmap expected, Bitmap actual, string context)
+        {
+            Require(expected.Width == actual.Width && expected.Height == actual.Height,
+                context + ": dimensions changed.");
+            for (int y = 0; y < expected.Height; y++)
+                for (int x = 0; x < expected.Width; x++)
+                    Require(expected.GetPixel(x, y).ToArgb() == actual.GetPixel(x, y).ToArgb(),
+                        context + ": pixel changed at " + x + "," + y + ".");
         }
 
         private static void RectangularCrop(string fixture)
@@ -374,6 +472,14 @@ namespace FolderIconTool.Tests
                 Require(Near(oriented.GetPixel(20, 15), Color.Red), "EXIF rotation must place red at top.");
                 Require(Near(oriented.GetPixel(20, 65), Color.Blue), "EXIF rotation must place blue at bottom.");
             }
+            using (Bitmap manuallyRotated = IconEngine.LoadOrientedImage(source, 90))
+            {
+                Require(manuallyRotated.Width == 80 && manuallyRotated.Height == 40,
+                    "Manual rotation must run after EXIF orientation correction.");
+                Require(Near(manuallyRotated.GetPixel(15, 20), Color.Blue) &&
+                    Near(manuallyRotated.GetPixel(65, 20), Color.Red),
+                    "Manual rotation must rotate the EXIF-corrected pixels clockwise.");
+            }
             Require(Hash(source) == originalHash, "Loading changed the EXIF source.");
         }
 
@@ -620,7 +726,12 @@ namespace FolderIconTool.Tests
         }
         private static bool Near(Color actual, Color expected)
         {
-            return actual.A >= 240 && Math.Abs(actual.R - expected.R) < 35 && Math.Abs(actual.G - expected.G) < 35 && Math.Abs(actual.B - expected.B) < 35;
+            return Near(actual, expected, 35);
+        }
+        private static bool Near(Color actual, Color expected, int tolerance)
+        {
+            return actual.A >= 240 && Math.Abs(actual.R - expected.R) < tolerance &&
+                Math.Abs(actual.G - expected.G) < tolerance && Math.Abs(actual.B - expected.B) < tolerance;
         }
         private static void RequireSuccess(OperationResult result, string operation)
         {
