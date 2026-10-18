@@ -26,6 +26,7 @@ namespace FolderIconTool.Tests
                 runRoot = Path.Combine(outputRoot, Guid.NewGuid().ToString("N").Substring(0, 8));
                 Directory.CreateDirectory(runRoot);
                 Run("crop dimensions and selected pixels", CropBehavior);
+                Run("rectangular crop preserves selection, aspect and undo", RectangularCrop);
                 Run("wide auto-fit preserves edges, aspect and transparency", delegate(string fixture) { FitBehavior(fixture, false); });
                 Run("tall auto-fit preserves edges, aspect and transparency", delegate(string fixture) { FitBehavior(fixture, true); });
                 Run("tiny auto-fit enlarges into compatible ICO", TinyFit);
@@ -88,6 +89,22 @@ namespace FolderIconTool.Tests
                 Require(Near(selected.GetPixel(64, 128), Color.Blue), "Explicit crop did not select requested pixels.");
                 Require(Near(selected.GetPixel(192, 128), Color.Yellow), "Explicit crop did not preserve its right edge.");
             }
+        }
+
+        private static void RectangularCrop(string fixture)
+        {
+            string source = MakeFitImage(fixture, false), originalHash = Hash(source), folder = MakeFolder(fixture);
+            Rectangle crop = new Rectangle(100, 0, 200, 100);
+            using (Bitmap image = IconEngine.LoadOrientedImage(source))
+            using (Bitmap rendered = IconEngine.RenderIconImage(image, crop, false))
+                VerifyTinyFit(rendered);
+            SeedExisting(folder);
+            Snapshot before = Capture(folder);
+            RequireSuccess(IconEngine.Apply(folder, source, crop, Backups(fixture)), "rectangular crop apply");
+            VerifyIco(Path.Combine(folder, IconName), VerifyTinyFit);
+            Require(Hash(source) == originalHash, "Rectangular crop changed the source.");
+            Undo(folder, fixture);
+            EqualSnapshot(before, Capture(folder), "Rectangular crop undo");
         }
 
         private static void FitBehavior(string fixture, bool tall)

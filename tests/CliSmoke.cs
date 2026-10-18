@@ -83,6 +83,22 @@ internal static class CliSmoke
             AssertUnchangedFolder();
             Console.WriteLine("PASS packaged CLI undo and original file preservation");
 
+            string rectangular = Path.Combine(output, "rectangular.json");
+            Require(Run("apply", "--folder", folder, "--image", picture, "--crop", "50,0,500,250",
+                "--backups", backups, "--result", rectangular) == 0 && ReadSuccess(rectangular),
+                "Four-part rectangular crop must apply successfully.");
+            Require(Run("undo", "--folder", folder, "--backups", backups) == 0, "Rectangular crop undo.");
+            AssertUnchangedFolder();
+            Console.WriteLine("PASS rectangular crop CLI and undo");
+
+            string square = Path.Combine(output, "square.json");
+            Require(Run("apply", "--folder", folder, "--image", picture, "--crop", "50,0,250",
+                "--backups", backups, "--result", square) == 0 && ReadSuccess(square),
+                "Legacy three-part square crop must remain supported.");
+            Require(Run("undo", "--folder", folder, "--backups", backups) == 0, "Legacy crop undo.");
+            AssertUnchangedFolder();
+            Console.WriteLine("PASS legacy square crop CLI and undo");
+
             string badCrop = Path.Combine(output, "bad-crop.json");
             Require(Run("apply", "--folder", folder, "--image", picture,
                 "--crop", "9999,9999,10", "--backups", backups,
@@ -115,7 +131,7 @@ internal static class CliSmoke
                 "A missing report parent must be rejected.");
             AssertUnchangedFolder();
             Console.WriteLine("PASS missing report directory is rejected before mutation");
-            Console.WriteLine("RESULT 6 passed, 0 failed");
+            Console.WriteLine("RESULT 8 passed, 0 failed");
             return 0;
         }
         catch (Exception ex)

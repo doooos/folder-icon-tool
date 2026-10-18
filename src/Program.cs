@@ -114,14 +114,15 @@ namespace FolderIconTool
             string value;
             if (!options.TryGetValue("--crop", out value)) return null;
             string[] values = value.Split(',');
-            int x, y, size;
-            if (values.Length != 3 ||
+            int x, y, width, height = 0;
+            if ((values.Length != 3 && values.Length != 4) ||
                 !Int32.TryParse(values[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out x) ||
                 !Int32.TryParse(values[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out y) ||
-                !Int32.TryParse(values[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out size) ||
-                x < 0 || y < 0 || size <= 0)
-                throw new ArgumentException("--crop 格式为 x,y,边长，单位为旋转校正后的图片像素。");
-            return new Rectangle(x, y, size, size);
+                !Int32.TryParse(values[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out width) ||
+                (values.Length == 4 && !Int32.TryParse(values[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out height)) ||
+                x < 0 || y < 0 || width <= 0 || (values.Length == 4 && height <= 0))
+                throw new ArgumentException("--crop 格式为 x,y,宽,高，或 x,y,边长，单位为旋转校正后的图片像素。");
+            return new Rectangle(x, y, width, values.Length == 3 ? width : height);
         }
 
         private static bool ParseFit(Dictionary<string, string> options, Rectangle? crop)
@@ -153,12 +154,12 @@ namespace FolderIconTool
         }
 
         private const string Help =
-            "全能自定义文件夹图标 1.0.0\r\n" +
+            "全能自定义文件夹图标 1.1.0\r\n" +
             "双击打开中文界面；命令行用法：\r\n" +
-            "  apply --folder <文件夹> --image <图片> [--fit contain|cover] [--crop x,y,边长]\r\n" +
+            "  apply --folder <文件夹> --image <图片> [--fit contain|cover] [--crop x,y,宽,高]\r\n" +
             "  undo --folder <文件夹>\r\n" +
             "可选：--backups <备份目录> --result <新建JSON结果文件>\r\n" +
-            "默认完整显示图片，自动等比适配。cover 居中裁剪；--crop 指定裁剪。\r\n" +
+            "默认完整显示图片。--crop 自定义裁剪后等比适配，也兼容 x,y,边长。\r\n" +
             "所有命令均不打开界面。\r\n" +
             "默认备份：程序所在目录\\data\\backups。撤销须使用原备份目录。\r\n";
     }

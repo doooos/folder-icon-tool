@@ -11,15 +11,16 @@ namespace FolderIconTool
     {
         private readonly string backupRoot;
         private readonly TextBox folderPathBox, imagePathBox;
-        private readonly Button chooseFolderButton, chooseImageButton, applyButton, restoreButton, resetButton;
+        private readonly Button chooseFolderButton, chooseImageButton, applyButton, restoreButton, resetButton, customCropButton;
         private readonly TrackBar zoomBar;
         private readonly Label zoomLabel, statusLabel, modeHelpLabel;
-        private readonly CheckBox fitWholeImageCheckBox;
+        private readonly CheckBox fitWholeImageCheckBox, squareCropCheckBox;
         private readonly PictureBox iconPreview;
         private readonly CropPreview cropPreview;
         private readonly ToolTip toolTip = new ToolTip();
         private string selectedFolder, selectedImage;
         private bool busy;
+        private bool updatingCropControls;
 
         public MainForm(string backupRoot)
         {
@@ -30,8 +31,8 @@ namespace FolderIconTool
             Font = new Font("Microsoft YaHei UI", 10F);
             AutoScaleDimensions = new SizeF(96F, 96F);
             AutoScaleMode = AutoScaleMode.Dpi;
-            ClientSize = new Size(1060, 740);
-            MinimumSize = new Size(900, 640);
+            ClientSize = new Size(1060, 790);
+            MinimumSize = new Size(900, 740);
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = Color.FromArgb(246, 248, 251);
             AllowDrop = true;
@@ -82,10 +83,10 @@ namespace FolderIconTool
             sidebar.BackColor = Color.White;
             sidebar.Padding = new Padding(14, 12, 14, 12);
             sidebar.ColumnCount = 1;
-            sidebar.RowCount = 7;
+            sidebar.RowCount = 9;
             sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
             sidebar.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            foreach (float height in new float[] { 38, 30, 36, 36, 48 })
+            foreach (float height in new float[] { 34, 38, 32, 28, 32, 36, 60 })
                 sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
             sidebar.Controls.Add(MakeLabel("实际图标预览 · 256 × 256"), 0, 0);
             iconPreview = new PictureBox();
@@ -100,8 +101,16 @@ namespace FolderIconTool
             fitWholeImageCheckBox.Dock = DockStyle.Fill;
             fitWholeImageCheckBox.Margin = Padding.Empty;
             sidebar.Controls.Add(fitWholeImageCheckBox, 0, 2);
+            customCropButton = MakeButton("自定义裁剪 / 重新框选");
+            customCropButton.Dock = DockStyle.Fill;
+            sidebar.Controls.Add(customCropButton, 0, 3);
+            squareCropCheckBox = new CheckBox();
+            squareCropCheckBox.Text = "锁定正方形（1:1）";
+            squareCropCheckBox.Dock = DockStyle.Fill;
+            squareCropCheckBox.Margin = Padding.Empty;
+            sidebar.Controls.Add(squareCropCheckBox, 0, 4);
             zoomLabel = MakeLabel("自动适配 · 不裁剪");
-            sidebar.Controls.Add(zoomLabel, 0, 3);
+            sidebar.Controls.Add(zoomLabel, 0, 5);
             zoomBar = new TrackBar();
             zoomBar.Dock = DockStyle.Fill;
             zoomBar.Minimum = 100;
@@ -110,13 +119,13 @@ namespace FolderIconTool
             zoomBar.SmallChange = 10;
             zoomBar.LargeChange = 50;
             zoomBar.TickStyle = TickStyle.None;
-            sidebar.Controls.Add(zoomBar, 0, 4);
+            sidebar.Controls.Add(zoomBar, 0, 6);
             resetButton = MakeButton("重置裁剪");
             resetButton.Dock = DockStyle.Fill;
-            sidebar.Controls.Add(resetButton, 0, 5);
-            modeHelpLabel = MakeLabel("保留整张图片，无需裁剪。\n取消勾选可手动调整。");
+            sidebar.Controls.Add(resetButton, 0, 7);
+            modeHelpLabel = MakeLabel("保留整张图片，无需裁剪。\n点击“自定义裁剪”可自己框选。");
             modeHelpLabel.Font = new Font(Font.FontFamily, 9F);
-            sidebar.Controls.Add(modeHelpLabel, 0, 6);
+            sidebar.Controls.Add(modeHelpLabel, 0, 8);
             content.Controls.Add(sidebar, 1, 0);
             layout.Controls.Add(content, 0, 3);
 
@@ -148,16 +157,22 @@ namespace FolderIconTool
                 UpdateButtons();
                 UpdateIconPreview();
                 if (cropPreview.HasImage)
-                    SetStatus(fitWholeImageCheckBox.Checked ? "已自动适配，保留整张图片。选择目标文件夹后即可应用。" : "已启用可选裁剪。可拖动方框或缩放，再点击应用。", false);
+                    SetStatus(fitWholeImageCheckBox.Checked ? "已自动适配，保留整张图片。选择目标文件夹后即可应用。" : "拖动框内移动选区，拖动边角调整大小；也可点击“重新框选”。", false);
             };
-            resetButton.Click += delegate { zoomBar.Value = 100; cropPreview.ResetCrop(); };
+            customCropButton.Click += delegate
+            {
+                fitWholeImageCheckBox.Checked = false;
+                cropPreview.BeginSelection();
+                SetStatus("在图片上按住鼠标左键，画出你想保留的范围。按 Esc 可取消。", false);
+            };
+            squareCropCheckBox.CheckedChanged += delegate { cropPreview.LockSquare = squareCropCheckBox.Checked; };
+            resetButton.Click += delegate { cropPreview.ResetCrop(); };
             zoomBar.ValueChanged += delegate
             {
-                if (!fitWholeImageCheckBox.Checked)
-                    zoomLabel.Text = "裁剪放大：" + (zoomBar.Value / 100.0).ToString("0.0") + " 倍";
-                cropPreview.SetZoom(zoomBar.Value);
+                if (!updatingCropControls && !fitWholeImageCheckBox.Checked)
+                    cropPreview.SetZoom(zoomBar.Value);
             };
-            cropPreview.CropChanged += delegate { UpdateIconPreview(); };
+            cropPreview.CropChanged += delegate { UpdateCropControls(); UpdateIconPreview(); };
             cropPreview.ZoomRequested += delegate(int direction)
             {
                 zoomBar.Value = Math.Max(zoomBar.Minimum, Math.Min(zoomBar.Maximum, zoomBar.Value + direction * 25));
@@ -206,7 +221,6 @@ namespace FolderIconTool
                 selectedImage = newImagePath;
                 imagePathBox.Text = selectedImage;
                 toolTip.SetToolTip(imagePathBox, selectedImage);
-                zoomBar.Value = 100;
                 cropPreview.SetImage(newImage);
             }
             UpdateButtons();
@@ -395,13 +409,29 @@ namespace FolderIconTool
             bool cropEnabled = !busy && cropPreview.HasImage && !fitWholeImageCheckBox.Checked;
             cropPreview.FitWholeImage = fitWholeImageCheckBox.Checked;
             cropPreview.Enabled = cropEnabled;
+            customCropButton.Enabled = !busy && cropPreview.HasImage;
+            squareCropCheckBox.Enabled = cropEnabled;
             zoomBar.Enabled = cropEnabled;
             resetButton.Enabled = cropEnabled;
-            zoomLabel.Text = fitWholeImageCheckBox.Checked ? "自动适配 · 不裁剪" : "裁剪放大：" + (zoomBar.Value / 100.0).ToString("0.0") + " 倍";
-            modeHelpLabel.Text = fitWholeImageCheckBox.Checked ? "保留整张图片，无需裁剪。\n取消勾选可手动调整。" : "可选：拖动方框或滚轮缩放。\n原图片不会被修改。";
+            UpdateCropControls();
+            modeHelpLabel.Text = fitWholeImageCheckBox.Checked ? "保留整张图片，无需裁剪。\n点击“自定义裁剪”可自己框选。" : "拖边角改大小，拖框内移动。\n矩形选区自动留透明边，不拉伸。\n点击应用才会替换文件夹图标。";
             applyButton.Enabled = !busy && !String.IsNullOrEmpty(selectedFolder) && cropPreview.HasImage;
             restoreButton.Enabled = !busy && !String.IsNullOrEmpty(selectedFolder);
             UseWaitCursor = busy;
+        }
+
+        private void UpdateCropControls()
+        {
+            updatingCropControls = true;
+            try
+            {
+                if (cropPreview.HasImage)
+                    zoomBar.Value = Math.Max(zoomBar.Minimum, Math.Min(zoomBar.Maximum, cropPreview.ZoomPercent));
+                Rectangle area = cropPreview.CropRectangle;
+                zoomLabel.Text = fitWholeImageCheckBox.Checked ? "自动适配 · 不裁剪" :
+                    "选区：" + area.Width + " × " + area.Height + " 像素";
+            }
+            finally { updatingCropControls = false; }
         }
 
         private void SetStatus(string message, bool error)
@@ -436,11 +466,14 @@ namespace FolderIconTool
 
         private sealed class CropPreview : Control
         {
+            private enum DragMode { None, Draw, Move, TopLeft, Top, TopRight, Right, BottomRight, Bottom, BottomLeft, Left }
             private Bitmap sourceImage;
             private Rectangle crop;
             private Point dragStart;
             private Rectangle dragCrop;
-            private bool dragging;
+            private DragMode dragMode;
+            private bool selectionArmed;
+            private bool lockSquare;
             private bool fitWholeImage = true;
             public event EventHandler CropChanged;
             public event Action<int> ZoomRequested;
@@ -456,6 +489,23 @@ namespace FolderIconTool
             public bool HasImage { get { return sourceImage != null; } }
             public Bitmap SourceImage { get { return sourceImage; } }
             public Rectangle CropRectangle { get { return crop; } }
+            public int ZoomPercent
+            {
+                get { return HasImage ? (int)Math.Min(Int32.MaxValue, Math.Round(100.0 * Math.Min((double)sourceImage.Width / crop.Width, (double)sourceImage.Height / crop.Height))) : 100; }
+            }
+            public bool LockSquare
+            {
+                get { return lockSquare; }
+                set
+                {
+                    lockSquare = value;
+                    if (value && HasImage)
+                    {
+                        int side = Math.Min(crop.Width, crop.Height);
+                        SetCrop(new Rectangle(crop.X + (crop.Width - side) / 2, crop.Y + (crop.Height - side) / 2, side, side));
+                    }
+                }
+            }
             public bool FitWholeImage
             {
                 get { return fitWholeImage; }
@@ -464,10 +514,11 @@ namespace FolderIconTool
                     if (fitWholeImage == value)
                         return;
                     fitWholeImage = value;
-                    dragging = false;
+                    dragMode = DragMode.None;
+                    selectionArmed = false;
                     if (Capture)
                         Capture = false;
-                    Cursor = value ? Cursors.Default : Cursors.SizeAll;
+                    Cursor = value ? Cursors.Default : Cursors.Cross;
                     Invalidate();
                 }
             }
@@ -485,24 +536,39 @@ namespace FolderIconTool
             {
                 if (!HasImage)
                     return;
+                selectionArmed = false;
+                dragMode = DragMode.None;
+                Capture = false;
                 int side = Math.Min(sourceImage.Width, sourceImage.Height);
                 SetCrop(new Rectangle((sourceImage.Width - side) / 2, (sourceImage.Height - side) / 2, side, side));
             }
 
+            public void BeginSelection()
+            {
+                selectionArmed = true;
+                Cursor = Cursors.Cross;
+                Focus();
+                Invalidate();
+            }
+
             public void SetZoom(int percent)
             {
-                if (!HasImage)
+                if (!HasImage || percent < 100)
                     return;
-                int side = Math.Max(1, (int)Math.Round(Math.Min(sourceImage.Width, sourceImage.Height) * 100.0 / percent));
-                int left = (int)Math.Round(crop.X + crop.Width / 2.0 - side / 2.0);
-                int top = (int)Math.Round(crop.Y + crop.Height / 2.0 - side / 2.0);
-                SetCrop(new Rectangle(left, top, side, side));
+                double factor = Math.Min((double)sourceImage.Width / crop.Width, (double)sourceImage.Height / crop.Height) * 100.0 / percent;
+                int width = Math.Max(1, (int)Math.Round(crop.Width * factor));
+                int height = Math.Max(1, (int)Math.Round(crop.Height * factor));
+                SetCrop(new Rectangle((int)Math.Round(crop.X + (crop.Width - width) / 2.0),
+                    (int)Math.Round(crop.Y + (crop.Height - height) / 2.0), width, height));
             }
 
             private void SetCrop(Rectangle value)
             {
-                int side = Math.Max(1, Math.Min(Math.Min(sourceImage.Width, sourceImage.Height), value.Width));
-                crop = new Rectangle(Math.Max(0, Math.Min(sourceImage.Width - side, value.X)), Math.Max(0, Math.Min(sourceImage.Height - side, value.Y)), side, side);
+                int width = Math.Max(1, Math.Min(sourceImage.Width, value.Width));
+                int height = Math.Max(1, Math.Min(sourceImage.Height, value.Height));
+                if (lockSquare) width = height = Math.Min(width, height);
+                crop = new Rectangle(Math.Max(0, Math.Min(sourceImage.Width - width, value.X)),
+                    Math.Max(0, Math.Min(sourceImage.Height - height, value.Y)), width, height);
                 Invalidate();
                 EventHandler handler = CropChanged;
                 if (handler != null)
@@ -525,7 +591,7 @@ namespace FolderIconTool
                 Graphics graphics = eventArgs.Graphics;
                 if (!HasImage)
                 {
-                    TextRenderer.DrawText(graphics, "选择或拖入一张照片\n\n在这里拖动方框，裁剪你的文件夹头像", Font, ClientRectangle, Color.FromArgb(100, 114, 133), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
+                    TextRenderer.DrawText(graphics, "选择或拖入一张照片\n\n点击“自定义裁剪”，自己框选想保留的画面", Font, ClientRectangle, Color.FromArgb(100, 114, 133), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
                     return;
                 }
                 RectangleF imageBounds = ImageBounds();
@@ -550,10 +616,65 @@ namespace FolderIconTool
                 {
                     for (int division = 1; division <= 2; division++)
                     {
-                        float offset = frame.Width * division / 3F;
-                        graphics.DrawLine(guide, frame.Left + offset, frame.Top, frame.Left + offset, frame.Bottom);
-                        graphics.DrawLine(guide, frame.Left, frame.Top + offset, frame.Right, frame.Top + offset);
+                        float x = frame.Left + frame.Width * division / 3F;
+                        float y = frame.Top + frame.Height * division / 3F;
+                        graphics.DrawLine(guide, x, frame.Top, x, frame.Bottom);
+                        graphics.DrawLine(guide, frame.Left, y, frame.Right, y);
                     }
+                }
+                using (Brush handleBrush = new SolidBrush(Color.White))
+                using (Pen handleBorder = new Pen(Color.FromArgb(40, 99, 204), 1F))
+                {
+                    foreach (PointF point in HandlePoints(frame))
+                    {
+                        float radius = HandleRadius;
+                        graphics.FillRectangle(handleBrush, point.X - radius, point.Y - radius, radius * 2, radius * 2);
+                        graphics.DrawRectangle(handleBorder, point.X - radius, point.Y - radius, radius * 2, radius * 2);
+                    }
+                }
+            }
+
+            private float HandleRadius { get { return Math.Max(5F, Font.Height / 3F); } }
+
+            private static PointF[] HandlePoints(RectangleF frame)
+            {
+                float cx = frame.Left + frame.Width / 2, cy = frame.Top + frame.Height / 2;
+                return new PointF[] {
+                    new PointF(frame.Left, frame.Top), new PointF(cx, frame.Top), new PointF(frame.Right, frame.Top),
+                    new PointF(frame.Right, cy), new PointF(frame.Right, frame.Bottom), new PointF(cx, frame.Bottom),
+                    new PointF(frame.Left, frame.Bottom), new PointF(frame.Left, cy) };
+            }
+
+            private DragMode HitTest(Point location)
+            {
+                RectangleF bounds = ImageBounds();
+                float scale = bounds.Width / sourceImage.Width;
+                RectangleF frame = new RectangleF(bounds.X + crop.X * scale, bounds.Y + crop.Y * scale, crop.Width * scale, crop.Height * scale);
+                PointF[] points = HandlePoints(frame);
+                for (int i = 0; i < points.Length; i++)
+                    if (Math.Abs(location.X - points[i].X) <= HandleRadius + 3 && Math.Abs(location.Y - points[i].Y) <= HandleRadius + 3)
+                        return (DragMode)((int)DragMode.TopLeft + i);
+                return frame.Contains(location) ? DragMode.Move : DragMode.None;
+            }
+
+            private Point ImagePoint(Point location)
+            {
+                RectangleF bounds = ImageBounds();
+                float scale = bounds.Width / sourceImage.Width;
+                return new Point(Math.Max(0, Math.Min(sourceImage.Width, (int)Math.Round((location.X - bounds.X) / scale))),
+                    Math.Max(0, Math.Min(sourceImage.Height, (int)Math.Round((location.Y - bounds.Y) / scale))));
+            }
+
+            private static Cursor CursorFor(DragMode mode)
+            {
+                switch (mode)
+                {
+                    case DragMode.Move: return Cursors.SizeAll;
+                    case DragMode.TopLeft: case DragMode.BottomRight: return Cursors.SizeNWSE;
+                    case DragMode.TopRight: case DragMode.BottomLeft: return Cursors.SizeNESW;
+                    case DragMode.Top: case DragMode.Bottom: return Cursors.SizeNS;
+                    case DragMode.Left: case DragMode.Right: return Cursors.SizeWE;
+                    default: return Cursors.Cross;
                 }
             }
 
@@ -564,40 +685,106 @@ namespace FolderIconTool
                     return;
                 Focus();
                 RectangleF bounds = ImageBounds();
-                if (!bounds.Contains(eventArgs.Location))
+                DragMode mode = selectionArmed ? DragMode.None : HitTest(eventArgs.Location);
+                if (mode == DragMode.None && !bounds.Contains(eventArgs.Location))
                     return;
-                float scale = bounds.Width / sourceImage.Width;
-                Point imagePoint = new Point((int)((eventArgs.X - bounds.X) / scale), (int)((eventArgs.Y - bounds.Y) / scale));
-                if (!crop.Contains(imagePoint))
-                    SetCrop(new Rectangle(imagePoint.X - crop.Width / 2, imagePoint.Y - crop.Height / 2, crop.Width, crop.Height));
-                dragStart = eventArgs.Location;
+                dragStart = ImagePoint(eventArgs.Location);
                 dragCrop = crop;
-                dragging = true;
                 Capture = true;
+                dragMode = mode == DragMode.None ? DragMode.Draw : mode;
+                selectionArmed = false;
+                Cursor = CursorFor(dragMode);
             }
 
             protected override void OnMouseMove(MouseEventArgs eventArgs)
             {
                 base.OnMouseMove(eventArgs);
-                if (!dragging || !HasImage || fitWholeImage)
+                if (!HasImage || fitWholeImage)
                     return;
-                float scale = ImageBounds().Width / sourceImage.Width;
-                int left = dragCrop.X + (int)Math.Round((eventArgs.X - dragStart.X) / scale);
-                int top = dragCrop.Y + (int)Math.Round((eventArgs.Y - dragStart.Y) / scale);
-                SetCrop(new Rectangle(left, top, dragCrop.Width, dragCrop.Height));
+                if (dragMode == DragMode.None)
+                {
+                    Cursor = selectionArmed ? Cursors.Cross : CursorFor(HitTest(eventArgs.Location));
+                    return;
+                }
+                Point point = ImagePoint(eventArgs.Location);
+                if (dragMode == DragMode.Move)
+                {
+                    SetCrop(new Rectangle(dragCrop.X + point.X - dragStart.X, dragCrop.Y + point.Y - dragStart.Y, dragCrop.Width, dragCrop.Height));
+                    return;
+                }
+                if (dragMode == DragMode.Draw)
+                {
+                    SetCrop(SelectionBetween(dragStart, point));
+                    return;
+                }
+                bool left = dragMode == DragMode.Left || dragMode == DragMode.TopLeft || dragMode == DragMode.BottomLeft;
+                bool right = dragMode == DragMode.Right || dragMode == DragMode.TopRight || dragMode == DragMode.BottomRight;
+                bool top = dragMode == DragMode.Top || dragMode == DragMode.TopLeft || dragMode == DragMode.TopRight;
+                bool bottom = dragMode == DragMode.Bottom || dragMode == DragMode.BottomLeft || dragMode == DragMode.BottomRight;
+                int x1 = left ? Math.Min(point.X, dragCrop.Right - 1) : dragCrop.Left;
+                int x2 = right ? Math.Max(point.X, dragCrop.Left + 1) : dragCrop.Right;
+                int y1 = top ? Math.Min(point.Y, dragCrop.Bottom - 1) : dragCrop.Top;
+                int y2 = bottom ? Math.Max(point.Y, dragCrop.Top + 1) : dragCrop.Bottom;
+                if (lockSquare && (left || right) && (top || bottom))
+                {
+                    SetCrop(SelectionBetween(new Point(left ? dragCrop.Right : dragCrop.Left, top ? dragCrop.Bottom : dragCrop.Top),
+                        new Point(left ? x1 : x2, top ? y1 : y2)));
+                }
+                else if (lockSquare)
+                {
+                    bool horizontal = left || right;
+                    double center = horizontal ? dragCrop.Y + dragCrop.Height / 2.0 : dragCrop.X + dragCrop.Width / 2.0;
+                    int maximum = (int)Math.Floor(2 * Math.Min(center, (horizontal ? sourceImage.Height : sourceImage.Width) - center));
+                    int side = Math.Max(1, Math.Min(maximum, horizontal ? x2 - x1 : y2 - y1));
+                    SetCrop(new Rectangle(horizontal ? (left ? x2 - side : x1) : (int)Math.Round(center - side / 2.0),
+                        horizontal ? (int)Math.Round(center - side / 2.0) : (top ? y2 - side : y1), side, side));
+                }
+                else SetCrop(Rectangle.FromLTRB(x1, y1, x2, y2));
+            }
+
+            private Rectangle SelectionBetween(Point anchor, Point point)
+            {
+                int dx = point.X - anchor.X, dy = point.Y - anchor.Y;
+                int sx = dx < 0 || anchor.X == sourceImage.Width ? -1 : 1;
+                int sy = dy < 0 || anchor.Y == sourceImage.Height ? -1 : 1;
+                int width = Math.Max(1, Math.Abs(dx)), height = Math.Max(1, Math.Abs(dy));
+                if (lockSquare)
+                {
+                    int side = Math.Max(width, height);
+                    side = Math.Min(side, sx < 0 ? anchor.X : sourceImage.Width - anchor.X);
+                    side = Math.Min(side, sy < 0 ? anchor.Y : sourceImage.Height - anchor.Y);
+                    width = height = Math.Max(1, side);
+                }
+                return new Rectangle(sx < 0 ? anchor.X - width : anchor.X, sy < 0 ? anchor.Y - height : anchor.Y, width, height);
             }
 
             protected override void OnMouseUp(MouseEventArgs eventArgs)
             {
                 base.OnMouseUp(eventArgs);
-                dragging = false;
+                if (eventArgs.Button != MouseButtons.Left) return;
+                dragMode = DragMode.None;
                 Capture = false;
             }
 
             protected override void OnMouseCaptureChanged(EventArgs eventArgs)
             {
                 base.OnMouseCaptureChanged(eventArgs);
-                dragging = false;
+                dragMode = DragMode.None;
+            }
+
+            protected override bool ProcessCmdKey(ref Message message, Keys keyData)
+            {
+                if (keyData == Keys.Escape && (selectionArmed || dragMode != DragMode.None))
+                {
+                    if (dragMode != DragMode.None) SetCrop(dragCrop);
+                    selectionArmed = false;
+                    dragMode = DragMode.None;
+                    Capture = false;
+                    Cursor = Cursors.Cross;
+                    Invalidate();
+                    return true;
+                }
+                return base.ProcessCmdKey(ref message, keyData);
             }
 
             protected override void OnMouseWheel(MouseEventArgs eventArgs)

@@ -185,9 +185,17 @@ namespace FolderIconTool
 
         public static Bitmap RenderIconImage(Bitmap image, Rectangle? crop, bool fitWholeImage)
         {
+            if (image == null) throw new ArgumentNullException("image");
             if (fitWholeImage && crop.HasValue)
                 throw new ArgumentException("保留整张图片时不能同时指定裁剪区域。", "crop");
-            return fitWholeImage ? FitSquare(image) : CropSquare(image, crop);
+            if (fitWholeImage) return FitSquare(image);
+            if (!crop.HasValue || crop.Value.Width == crop.Value.Height) return CropSquare(image, crop);
+            Rectangle area = crop.Value;
+            if (area.Width <= 0 || area.Height <= 0 || area.X < 0 || area.Y < 0 ||
+                (long)area.X + area.Width > image.Width || (long)area.Y + area.Height > image.Height)
+                throw new ArgumentException("裁剪区域必须位于图片内，宽和高必须大于零。", "crop");
+            using (Bitmap selected = image.Clone(area, PixelFormat.Format32bppArgb))
+                return FitSquare(selected);
         }
 
         public static OperationResult Apply(string folder, string imagePath, Rectangle? crop, string backupRoot, bool fitWholeImage)

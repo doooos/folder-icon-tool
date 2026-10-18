@@ -93,6 +93,44 @@ internal static class GuiSmoke
                 Require(zoom.Value == 100, "Reset must restore 1x zoom.");
                 AssertPreviewMatches(form, new Rectangle(100, 0, 800, 800));
                 fitWholeImage.Checked = true;
+                Click(Field<Button>(form, "customCropButton"));
+                Require(!fitWholeImage.Checked && canvas.Enabled, "Custom crop must enable selection from auto-fit.");
+                Drag(canvas, new Point(200, 180), new Point(700, 580));
+                Rectangle selected = ReadCrop(canvas);
+                RequireClose(selected, new Rectangle(200, 180, 500, 400), "Free selection");
+                AssertPreviewMatches(form, selected);
+                Require(((Bitmap)Field<PictureBox>(form, "iconPreview").Image).GetPixel(128, 0).A == 0,
+                    "A rectangular selection must retain its aspect ratio with transparent padding.");
+
+                Drag(canvas, new Point(450, 380), new Point(500, 420));
+                Rectangle moved = ReadCrop(canvas);
+                RequireClose(moved, new Rectangle(selected.X + 50, selected.Y + 40, selected.Width, selected.Height), "Move selection");
+                Require(moved.Size == selected.Size, "Moving must preserve the crop size.");
+                Drag(canvas, new Point(moved.Right, moved.Top + moved.Height / 2),
+                    new Point(850, moved.Top + moved.Height / 2));
+                Rectangle resized = ReadCrop(canvas);
+                Require(Math.Abs(resized.Right - 850) <= 2 && resized.Left == moved.Left &&
+                    resized.Top == moved.Top && resized.Height == moved.Height, "Dragging an edge must resize only that edge.");
+                AssertPreviewMatches(form, resized);
+                Drag(canvas, new Point(resized.Left + resized.Width / 2, resized.Top + resized.Height / 2),
+                    new Point(1600, 1300));
+                Rectangle bounded = ReadCrop(canvas);
+                Require(bounded.Right == 1000 && bounded.Bottom == 800 && bounded.Size == resized.Size,
+                    "Moving outside the image must stop at its bounds without shrinking.");
+
+                Field<CheckBox>(form, "squareCropCheckBox").Checked = true;
+                Click(Field<Button>(form, "customCropButton"));
+                Drag(canvas, new Point(100, 100), new Point(600, 400));
+                Rectangle square = ReadCrop(canvas);
+                RequireClose(square, new Rectangle(100, 100, 500, 500), "Locked square selection");
+                Require(square.Width == square.Height, "Square lock must preserve 1:1.");
+                AssertPreviewMatches(form, square);
+                using (var screenshot = new Bitmap(form.Width, form.Height))
+                {
+                    form.DrawToBitmap(screenshot, new Rectangle(Point.Empty, form.Size));
+                    screenshot.Save(Path.Combine(output, "自定义裁剪预览.png"), ImageFormat.Png);
+                }
+                fitWholeImage.Checked = true;
                 AssertPreviewMatches(form, null);
                 Require(Field<Button>(form, "applyButton").Enabled, "Auto-fit must be immediately ready to apply.");
                 if (Directory.GetFiles(folder).Length != 0)
@@ -111,7 +149,7 @@ internal static class GuiSmoke
             Require(originalPicture.Length == resultingPicture.Length, "The original photo length changed.");
             for (int index = 0; index < originalPicture.Length; index++)
                 Require(originalPicture[index] == resultingPicture[index], "The original photo content changed.");
-            Console.WriteLine("PASS: hidden render, default whole-image fit, transparent padding, optional 256px crop, zoom, clamping, reset, folder-only undo, unlocked original and no writes.");
+            Console.WriteLine("PASS: hidden render, whole-image fit, free selection, move, edge resize, bounds, square lock, transparent padding, matching preview, zoom, reset, folder-only undo and unchanged original.");
             return 0;
         }
         catch (Exception ex)
@@ -135,6 +173,45 @@ internal static class GuiSmoke
         return (T)typeof(MainForm).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
     }
 
+    private static void Click(Button button)
+    {
+        button.GetType().GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic)
+            .Invoke(button, new object[] { EventArgs.Empty });
+    }
+
+    private static Rectangle ReadCrop(Control canvas)
+    {
+        return (Rectangle)canvas.GetType().GetProperty("CropRectangle").GetValue(canvas, null);
+    }
+
+    private static Point CanvasPoint(Control canvas, Point point)
+    {
+        RectangleF bounds = (RectangleF)canvas.GetType().GetMethod("ImageBounds",
+            BindingFlags.Instance | BindingFlags.NonPublic).Invoke(canvas, null);
+        Bitmap source = (Bitmap)canvas.GetType().GetProperty("SourceImage").GetValue(canvas, null);
+        return new Point((int)Math.Round(bounds.Left + point.X * bounds.Width / source.Width),
+            (int)Math.Round(bounds.Top + point.Y * bounds.Height / source.Height));
+    }
+
+    private static void Drag(Control canvas, Point fromImage, Point toImage)
+    {
+        Point from = CanvasPoint(canvas, fromImage), to = CanvasPoint(canvas, toImage);
+        Type type = canvas.GetType();
+        type.GetMethod("OnMouseDown", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(canvas,
+            new object[] { new MouseEventArgs(MouseButtons.Left, 1, from.X, from.Y, 0) });
+        type.GetMethod("OnMouseMove", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(canvas,
+            new object[] { new MouseEventArgs(MouseButtons.Left, 0, to.X, to.Y, 0) });
+        type.GetMethod("OnMouseUp", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(canvas,
+            new object[] { new MouseEventArgs(MouseButtons.Left, 1, to.X, to.Y, 0) });
+    }
+
+    private static void RequireClose(Rectangle actual, Rectangle expected, string operation)
+    {
+        Require(Math.Abs(actual.Left - expected.Left) <= 2 && Math.Abs(actual.Top - expected.Top) <= 2 &&
+            Math.Abs(actual.Right - expected.Right) <= 2 && Math.Abs(actual.Bottom - expected.Bottom) <= 2,
+            operation + ": " + actual + "; expected approximately " + expected);
+    }
+
     private static void AssertPreviewMatches(MainForm form, Rectangle? expectedCrop)
     {
         Control canvas = Field<Control>(form, "cropPreview");
@@ -147,7 +224,7 @@ internal static class GuiSmoke
         Bitmap source = (Bitmap)canvasType.GetProperty("SourceImage").GetValue(canvas, null);
         Bitmap actual = (Bitmap)Field<PictureBox>(form, "iconPreview").Image;
         Require(actual != null && actual.Size == new Size(256, 256), "The actual icon must be 256 x 256.");
-        using (Bitmap expected = fitWholeImage ? IconEngine.FitSquare(source) : IconEngine.CropSquare(source, expectedCrop))
+        using (Bitmap expected = IconEngine.RenderIconImage(source, expectedCrop, fitWholeImage))
         {
             for (int row = 0; row < expected.Height; row++)
                 for (int column = 0; column < expected.Width; column++)
