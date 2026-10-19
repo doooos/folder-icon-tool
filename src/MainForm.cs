@@ -185,6 +185,11 @@ namespace FolderIconTool
 
             chooseFolderButton.Click += delegate { ChooseFolder(); };
             confirmFolderButton.Click += delegate { ConfirmFolderPath(); };
+            folderPathBox.MouseClick += delegate(object sender, MouseEventArgs eventArgs)
+            {
+                if (eventArgs.Button == MouseButtons.Left)
+                    folderPathBox.SelectAll();
+            };
             folderPathBox.TextChanged += delegate { ValidateFolderPath(false, true); UpdateButtons(); };
             folderPathBox.KeyDown += delegate(object sender, KeyEventArgs eventArgs)
             {

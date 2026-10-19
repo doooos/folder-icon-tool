@@ -169,7 +169,7 @@ namespace FolderIconTool
         }
 
         private const string Help =
-            "全能自定义文件夹图标 1.2.0\r\n" +
+            "全能自定义文件夹图标 1.2.1\r\n" +
             "双击打开中文界面；命令行用法：\r\n" +
             "  apply --folder <文件夹> --image <图片> [--rotate 0|90|180|270] [--fit contain|cover] [--crop x,y,宽,高]\r\n" +
             "  undo --folder <文件夹>\r\n" +
